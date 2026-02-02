@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@layer utilities {
+  @keyframes titlePulse {
+    0%, 100% { transform: translateY(0); filter: saturate(1); }
+    50% { transform: translateY(-2px); filter: saturate(1.25); }
+  }
+  @keyframes titleGlow {
+    0%, 100% { opacity: 0.30; }
+    50% { opacity: 0.70; }
+  }
+  @keyframes titleShine {
+    0% { transform: translateX(-40%) skewX(12deg); opacity: 0; }
+    12% { opacity: 0.50; }
+    35% { opacity: 0; }
+    100% { transform: translateX(140%) skewX(12deg); opacity: 0; }
+  }
+
+  .animate-titlePulse { animation: titlePulse 2.4s ease-in-out infinite; }
+  .animate-titleGlow  { animation: titleGlow 2.4s ease-in-out infinite; }
+  .animate-titleShine { animation: titleShine 4.0s ease-in-out infinite; }
+}
+
