@@ -188,31 +188,6 @@ function birthDateToLucky(date?: string): number[] {
 
 /* ---------------- UI atoms ---------------- */
 
-function Tooltip({
-  label,
-  children,
-  title,
-}: {
-  label: React.ReactNode;
-  children: React.ReactNode;
-  title?: string;
-}) {
-  return (
-    <span className="tip-wrap">
-      <span className="inline-flex items-center gap-2">{children}</span>
-      <span className="tip">
-        <span className="tip-box">
-          {title && (
-            <div className="text-xs font-black text-black/70 mb-1">{title}</div>
-          )}
-          <div className="text-xs text-black/70 leading-relaxed">{label}</div>
-          <span className="tip-arrow" />
-        </span>
-      </span>
-    </span>
-  );
-}
-
 function Card({
   children,
   className,
