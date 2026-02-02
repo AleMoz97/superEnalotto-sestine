@@ -14,7 +14,7 @@ import { frequencyMap, topNumbers, missingNumbers } from "./lib/stats";
 import { rngFromSeed, mulberry32 } from "./lib/rng";
 import { generateUniqueSestine, type Constraints } from "./lib/sestine";
 
-type Tab = "generate" | "stats" | "validate" | "settings";
+type Tab = "generate" | "stats" | "validate" | "prizes" | "settings";
 
 type ValidationRow = {
   key: string;
@@ -26,6 +26,11 @@ type ValidationRow = {
   superstarHit: boolean;
 };
 
+type PrizeCounts = Record<
+  "6" | "5+1" | "5" | "4" | "3" | "2" | "other",
+  number
+>;
+
 type ValidationResult = {
   at: string;
   groupId: string;
@@ -35,6 +40,9 @@ type ValidationResult = {
   superstar?: number;
   counts: Record<number, number>;
   rows: ValidationRow[];
+
+  prizeCounts: PrizeCounts;
+  estimatedTotalEuro: number;
 };
 
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -47,6 +55,60 @@ function clampNumList(values: string): number[] {
     .map((x) => Number(x))
     .filter((n) => Number.isFinite(n) && n >= 1 && n <= 90);
   return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
+
+type PrizeRow = {
+  label: string; // "6", "5+1"...
+  probability: string; // "1 su ..."
+  expected: string; // "Jackpot" / "32.000 €"...
+  avgEuro?: number; // per calcoli (se fisso)
+  isJackpot?: boolean;
+};
+
+const PRIZE_TABLE: PrizeRow[] = [
+  {
+    label: "6",
+    probability: "1 su 622.614.630",
+    expected: "Jackpot",
+    isJackpot: true,
+  },
+  {
+    label: "5+1",
+    probability: "1 su 103.769.105",
+    expected: "620.000 €",
+    avgEuro: 620_000,
+  },
+  {
+    label: "5",
+    probability: "1 su 1.250.230",
+    expected: "32.000 €",
+    avgEuro: 32_000,
+  },
+  { label: "4", probability: "1 su 11.907", expected: "300 €", avgEuro: 300 },
+  { label: "3", probability: "1 su 327", expected: "25 €", avgEuro: 25 },
+  { label: "2", probability: "1 su 22", expected: "5 €", avgEuro: 5 },
+];
+
+function formatEUR(n: number) {
+  return n.toLocaleString("it-IT", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 0,
+  });
+}
+
+function estimateTicketWinEUR(
+  hits: number,
+  jollyHit: boolean,
+  jackpotEuro: number,
+) {
+  if (hits === 6) return jackpotEuro;
+  if (hits === 5 && jollyHit) return 620_000;
+  if (hits === 5) return 32_000;
+  if (hits === 4) return 300;
+  if (hits === 3) return 25;
+  if (hits === 2) return 5;
+  return 0;
 }
 
 function parseSixUnique(
@@ -76,62 +138,31 @@ function nCk(n: number, k: number): number {
   if (k < 0 || k > n) return 0;
   k = Math.min(k, n - k);
   let res = 1;
-  for (let i = 1; i <= k; i++) {
-    res = (res * (n - (k - i))) / i;
-  }
+  for (let i = 1; i <= k; i++) res = (res * (n - (k - i))) / i;
   return res;
 }
 
 function singleTicketExactMatchProb(r: number): number {
-  // Probabilità che una sestina random abbia ESATTAMENTE r match con una estrazione (6 numeri su 90)
-  // p_r = C(6,r) * C(84, 6-r) / C(90,6)
   const total = nCk(90, 6);
   return (nCk(6, r) * nCk(84, 6 - r)) / total;
 }
 
-/*function bestResultDistribution(kTickets: number): { m: number; p: number }[] {
-  // Distribuzione teorica del "miglior risultato" (max match) tra k sestine.
-  // Assunzione: sestine ~ indipendenti (con unicità globale è una buona approssimazione).
-  const pExact = Array.from({ length: 7 }, (_, r) =>
-    singleTicketExactMatchProb(r),
-  ); // 0..6
-  const cdf = Array(7).fill(0);
-  let acc = 0;
-  for (let r = 0; r <= 6; r++) {
-    acc += pExact[r];
-    cdf[r] = acc; // P(X<=r)
-  }
-
-  const dist: { m: number; p: number }[] = [];
-  for (let m = 0; m <= 6; m++) {
-    const a = m === 0 ? 0 : Math.pow(cdf[m - 1], kTickets); // P(max <= m-1)
-    const b = Math.pow(cdf[m], kTickets); // P(max <= m)
-    dist.push({ m, p: Math.max(0, b - a) });
-  }
-  // vogliamo 6..0 per grafico
-  return dist.sort((x, y) => y.m - x.m);
-}*/
-
 function atLeastDistribution(kTickets: number): { m: number; p: number }[] {
-  // pExact[r] e cdf[r] come prima
   const pExact = Array.from({ length: 7 }, (_, r) =>
     singleTicketExactMatchProb(r),
-  ); // 0..6
-
+  );
   const cdf = Array(7).fill(0);
   let acc = 0;
   for (let r = 0; r <= 6; r++) {
     acc += pExact[r];
-    cdf[r] = acc; // P(X <= r)
+    cdf[r] = acc;
   }
 
-  // P(max >= m) = 1 - P(max <= m-1) = 1 - (P(X <= m-1))^k
   const out: { m: number; p: number }[] = [];
-  for (let m = 1; m <= 6; m++) {
+  for (let m = 1; m <= 6; m++)
     out.push({ m, p: 1 - Math.pow(cdf[m - 1], kTickets) });
-  }
 
-  return out.sort((a, b) => b.m - a.m); // 6..1
+  return out.sort((a, b) => b.m - a.m);
 }
 
 function sleep(ms: number) {
@@ -155,6 +186,96 @@ function birthDateToLucky(date?: string): number[] {
   return Array.from(new Set(arr)).sort((a, b) => a - b);
 }
 
+/* ---------------- UI atoms ---------------- */
+
+function Tooltip({
+  label,
+  children,
+  title,
+}: {
+  label: React.ReactNode;
+  children: React.ReactNode;
+  title?: string;
+}) {
+  return (
+    <span className="tip-wrap">
+      <span className="inline-flex items-center gap-2">{children}</span>
+      <span className="tip">
+        <span className="tip-box">
+          {title && (
+            <div className="text-xs font-black text-black/70 mb-1">{title}</div>
+          )}
+          <div className="text-xs text-black/70 leading-relaxed">{label}</div>
+          <span className="tip-arrow" />
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function Card({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-3xl border border-black/10 bg-white shadow-sm",
+        "transition will-change-transform",
+        "hover:-translate-y-[1px] hover:shadow-md",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SectionTitle({
+  title,
+  subtitle,
+  right,
+}: {
+  title: string;
+  subtitle?: React.ReactNode;
+  right?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <div className="text-lg font-extrabold text-black">{title}</div>
+        {subtitle && (
+          <div className="mt-1 text-xs text-black/60">{subtitle}</div>
+        )}
+      </div>
+      {right && <div className="shrink-0">{right}</div>}
+    </div>
+  );
+}
+
+function StatPill({
+  label,
+  value,
+  tip,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tip?: string;
+}) {
+  const body = (
+    <span className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/70 px-3 py-1 text-sm font-bold text-black/70 shadow-sm glass">
+      <span className="text-black/50">{label}</span>
+      <span className="text-black">{value}</span>
+    </span>
+  );
+
+  if (!tip) return body;
+  return <div>{body}</div>;
+}
+
 function TabButton({
   active,
   children,
@@ -169,9 +290,10 @@ function TabButton({
       onClick={onClick}
       className={cn(
         "px-4 py-2 rounded-full text-sm font-extrabold border transition select-none",
+        "hover:shadow-sm",
         active
-          ? "bg-blue-50 border-blue-200 text-blue-900"
-          : "bg-white border-black/10 text-black/80 hover:bg-black/[0.03]",
+          ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+          : "bg-white/80 border-black/10 text-black/80 hover:bg-black/[0.03]",
       )}
     >
       {children}
@@ -198,10 +320,11 @@ function PrimaryButton({
       onClick={onClick}
       disabled={isDisabled}
       className={cn(
-        "px-3 py-2 rounded-xl border font-extrabold transition inline-flex items-center gap-2 justify-center",
+        "px-3 py-2 rounded-2xl border font-extrabold transition inline-flex items-center gap-2 justify-center",
+        "active:scale-[0.99]",
         isDisabled
           ? "border-black/10 bg-black/5 text-black/40 cursor-not-allowed"
-          : "border-black/10 bg-black text-white hover:bg-black/90",
+          : "bg-emerald-600 text-white hover:bg-emerald-700 border-emerald-300 shadow-sm",
         className,
       )}
     >
@@ -230,7 +353,7 @@ function Button({
 }) {
   const isDisabled = disabled || loading;
   const base =
-    "px-3 py-2 rounded-xl border font-extrabold transition select-none inline-flex items-center gap-2 justify-center";
+    "px-3 py-2 rounded-2xl border font-extrabold transition select-none inline-flex items-center gap-2 justify-center active:scale-[0.99]";
   const styles =
     variant === "danger"
       ? isDisabled
@@ -284,8 +407,9 @@ function Input({
       onChange={onChange}
       placeholder={placeholder}
       className={cn(
-        "w-full px-3 py-2 rounded-xl border border-black/10 bg-white outline-none",
-        "focus:ring-2 focus:ring-blue-200 focus:border-blue-200",
+        "w-full px-3 py-2 rounded-2xl border border-black/10 bg-white outline-none",
+        "focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300",
+        "transition",
         disabled && "bg-black/5 text-black/40 cursor-not-allowed",
         className,
       )}
@@ -298,13 +422,15 @@ function Toggle({
   onChange,
   label,
   disabled,
+  tip,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   disabled?: boolean;
+  tip?: string;
 }) {
-  return (
+  const control = (
     <label
       className={cn(
         "flex items-center gap-3 select-none",
@@ -316,18 +442,21 @@ function Toggle({
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-blue-600"
+        className="h-4 w-4 accent-emerald-600"
       />
       <span className="text-sm font-bold text-black/80">{label}</span>
     </label>
   );
+
+  if (!tip) return control;
+  return <div>{control}</div>;
 }
 
 function Bar({ value, max }: { value: number; max: number }) {
   const pct = max === 0 ? 0 : Math.round((value / max) * 100);
   return (
-    <div className="h-2 rounded-full bg-black/10 overflow-hidden">
-      <div className="h-full bg-blue-500/50" style={{ width: `${pct}%` }} />
+    <div className="h-2 rounded-full bg-emerald-100 overflow-hidden">
+      <div className="h-full bg-emerald-500/60" style={{ width: `${pct}%` }} />
     </div>
   );
 }
@@ -352,12 +481,11 @@ function Chip({
         "inline-flex items-center justify-center min-w-[34px] h-8 px-3 rounded-full border text-sm font-black",
         "transition",
         isHit
-          ? "bg-green-500/10 border-green-500/30"
-          : "bg-white border-black/10",
+          ? "bg-emerald-500/12 border-emerald-500/30 text-emerald-900"
+          : "bg-white border-black/10 text-black/85",
         evenOdd &&
           (isEven ? "ring-1 ring-cyan-500/10" : "ring-1 ring-orange-500/10"),
-        lowHigh && (isLow ? "" : "border-blue-500/20"),
-        !isHit && "text-black/85",
+        lowHigh && (isLow ? "" : "border-emerald-500/20"),
       )}
       title={`${n}`}
     >
@@ -365,6 +493,8 @@ function Chip({
     </span>
   );
 }
+
+/* -------- Virtual list (unchanged logic; nicer card) -------- */
 
 function SestineVirtualList({
   items,
@@ -399,14 +529,7 @@ function SestineVirtualList({
   };
 
   const rowProps: RowProps = useMemo(
-    () => ({
-      items,
-      evenOdd,
-      lowHigh,
-      onToggleFreeze,
-      onRemove,
-      isBusy,
-    }),
+    () => ({ items, evenOdd, lowHigh, onToggleFreeze, onRemove, isBusy }),
     [items, evenOdd, lowHigh, onToggleFreeze, onRemove, isBusy],
   );
 
@@ -417,9 +540,10 @@ function SestineVirtualList({
       <div style={style as React.CSSProperties} className="px-3 py-2">
         <div
           className={cn(
-            "rounded-2xl border p-3 flex items-start justify-between gap-3",
+            "rounded-3xl border p-3 flex items-start justify-between gap-3 transition",
+            "hover:shadow-sm",
             s.frozen
-              ? "bg-blue-50 border-blue-200"
+              ? "bg-emerald-50 border-emerald-200"
               : "bg-white border-black/10",
           )}
         >
@@ -444,6 +568,7 @@ function SestineVirtualList({
             >
               {s.frozen ? "🔓" : "🔒"}
             </Button>
+
             <Button
               variant="danger"
               onClick={() => rp.onRemove(s.key)}
@@ -470,6 +595,8 @@ function SestineVirtualList({
   );
 }
 
+/* ---------------- App ---------------- */
+
 export default function App() {
   const [state, setState] = useState<AppState>(() => loadState());
   const [tab, setTab] = useState<Tab>("generate");
@@ -489,27 +616,32 @@ export default function App() {
   const [validationResult, setValidationResult] =
     useState<ValidationResult | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [genModal, setGenModal] = useState<null | {
     groupName: string;
     total: number;
     done: number;
   }>(null);
+
   // Pagination UI
   const [pageSize, setPageSize] = useState<number>(200);
   const [pageIndex, setPageIndex] = useState<number>(0);
+  const [jackpotEuro, setJackpotEuro] = useState<number>(() => {
+    const raw = localStorage.getItem("superenalotto_jackpot_eur");
+    const n = raw ? Number(raw) : 115_000_000;
+    return Number.isFinite(n) && n > 0 ? n : 115_000_000;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("superenalotto_jackpot_eur", String(jackpotEuro));
+  }, [jackpotEuro]);
 
   const genAbortRef = React.useRef(false);
 
   useEffect(() => {
-    // Debounce: localStorage è sincrono e con dataset grandi freeza.
-    // Inoltre non salvare mentre stai generando.
     if (isGenerating) return;
-
-    const t = setTimeout(() => {
-      saveState(state);
-    }, 800);
-
+    const t = setTimeout(() => saveState(state), 800);
     return () => clearTimeout(t);
   }, [state, isGenerating]);
 
@@ -520,7 +652,6 @@ export default function App() {
   }, [state.groups, selectedGroupId]);
 
   useEffect(() => {
-    // quando cambio gruppo, riparto dalla prima pagina
     setPageIndex(0);
   }, [selectedGroupId]);
 
@@ -528,7 +659,7 @@ export default function App() {
     () => state.groups.find((g) => g.id === selectedGroupId) ?? null,
     [state.groups, selectedGroupId],
   );
-  // ---- Pagination derived values (solo gruppo selezionato) ----
+
   const selectedCount = selectedGroup?.sestine.length ?? 0;
 
   const pageCount = useMemo(() => {
@@ -536,7 +667,6 @@ export default function App() {
     return Math.max(1, Math.ceil(selectedCount / pageSize));
   }, [selectedCount, pageSize]);
 
-  // clamp pageIndex se cambia la size o cambia la lunghezza
   useEffect(() => {
     setPageIndex((p) => Math.min(p, pageCount - 1));
   }, [pageCount]);
@@ -582,7 +712,6 @@ export default function App() {
     return { exclude, mustInclude, mustIncludeAnyOf };
   }, [state.settings]);
 
-  // ===== Actions
   function addGroup() {
     const name = newGroupName.trim() || `Gruppo ${state.groups.length + 1}`;
     const g: Group = {
@@ -658,14 +787,12 @@ export default function App() {
     const seedEnabled = state.settings.seedEnabled;
     const seed = seedEnabled ? state.settings.seedValue.trim() : "";
 
-    // base seed per random non deterministico
     const baseRng = seedEnabled
       ? rngFromSeed(`${seed}::${selectedGroup.id}::base`)
       : mulberry32(crypto.getRandomValues(new Uint32Array(1))[0] >>> 0);
 
     const baseSeedNum = Math.floor(baseRng() * 2 ** 32) >>> 0;
 
-    // chunked generation config
     const CHUNK = n >= 5000 ? 250 : n >= 1000 ? 200 : n >= 200 ? 100 : 50;
 
     setIsGenerating(true);
@@ -704,14 +831,13 @@ export default function App() {
 
         allGenerated.push(...chunk);
         produced += chunk.length;
-        nonceBase += take * 3; // sposta lo spazio nonce per evitare collisioni "seedate"
+        nonceBase += take * 3;
+
         setGenModal({
           groupName: selectedGroup.name,
           total: n,
           done: produced,
         });
-
-        // yield al browser: evita freeze e “script long running”
         await sleep(0);
       }
 
@@ -736,7 +862,6 @@ export default function App() {
         }));
       }
     } catch (e: any) {
-      // vincoli impossibili / troppi duplicati / ecc.
       alert(e?.message ?? "Errore durante la generazione.");
     } finally {
       setIsGenerating(false);
@@ -817,7 +942,6 @@ export default function App() {
     setSelectedGroupId(null);
   }
 
-  // ===== Stats (sul gruppo selezionato)
   const groupBestDist = useMemo(() => {
     const k = selectedGroup?.sestine.length ?? 0;
     if (k <= 0) return null;
@@ -836,7 +960,6 @@ export default function App() {
   const missing = useMemo(() => missingNumbers(freq), [freq]);
   const maxFreq = useMemo(() => Math.max(0, ...freq), [freq]);
 
-  // ===== Validation
   function validateAgainstGroup() {
     if (!selectedGroup) return;
     setValidationError(null);
@@ -867,6 +990,30 @@ export default function App() {
       };
     });
 
+    const prizeCounts: PrizeCounts = {
+      "6": 0,
+      "5+1": 0,
+      "5": 0,
+      "4": 0,
+      "3": 0,
+      "2": 0,
+      other: 0,
+    };
+    let estimatedTotalEuro = 0;
+
+    for (const r of rows) {
+      const eur = estimateTicketWinEUR(r.hits, r.jollyHit, jackpotEuro);
+      estimatedTotalEuro += eur;
+
+      if (r.hits === 6) prizeCounts["6"]++;
+      else if (r.hits === 5 && r.jollyHit) prizeCounts["5+1"]++;
+      else if (r.hits === 5) prizeCounts["5"]++;
+      else if (r.hits === 4) prizeCounts["4"]++;
+      else if (r.hits === 3) prizeCounts["3"]++;
+      else if (r.hits === 2) prizeCounts["2"]++;
+      else prizeCounts.other++;
+    }
+
     const counts: Record<number, number> = {
       0: 0,
       1: 0,
@@ -894,6 +1041,8 @@ export default function App() {
       superstar,
       counts,
       rows,
+      prizeCounts,
+      estimatedTotalEuro,
     };
 
     setValidationResult(res);
@@ -918,18 +1067,25 @@ export default function App() {
   const lowHigh = state.settings.highlightLowHigh;
 
   return (
-    <div className="min-h-screen bg-neutral-50">
+    <div className="min-h-screen bg-gradient-to-b from-emerald-50 via-neutral-50 to-neutral-50">
+      {/* soft background decor */}
+      <div className="pointer-events-none fixed inset-0 -z-10">
+        <div className="absolute -top-24 -left-24 h-72 w-72 rounded-full bg-emerald-400/15 blur-3xl" />
+        <div className="absolute top-24 -right-24 h-72 w-72 rounded-full bg-green-400/10 blur-3xl" />
+        <div className="absolute bottom-0 left-1/2 h-80 w-80 -translate-x-1/2 rounded-full bg-emerald-500/10 blur-3xl" />
+      </div>
+
       <div className="mx-auto max-w-6xl px-4 py-6">
-        {/* HEADER centrato */}
-        <header className="flex flex-col items-center text-center gap-3">
-          <div className="flex flex-col items-center gap-1">
+        {/* HEADER */}
+        <header className="flex flex-col items-center text-center gap-3 animate-fadeUp">
+          <div className="flex flex-col items-center gap-2">
             <div className="relative">
               <h1
                 className={[
                   "text-4xl sm:text-5xl font-black tracking-tight",
                   "[font-family:'Bungee',system-ui]",
                   "text-transparent bg-clip-text",
-                  "bg-gradient-to-r from-green-700 via-emerald-500 to-green-700",
+                  "bg-gradient-to-r from-emerald-700 via-emerald-500 to-green-600",
                   "drop-shadow-[0_1px_0_rgba(0,0,0,0.15)]",
                   "animate-titlePulse",
                 ].join(" ")}
@@ -944,7 +1100,6 @@ export default function App() {
                   "animate-titleGlow",
                 ].join(" ")}
               />
-
               <div
                 className={[
                   "pointer-events-none absolute inset-y-0 left-0 w-20",
@@ -955,21 +1110,24 @@ export default function App() {
               />
             </div>
 
-            <div className="flex flex-wrap justify-center gap-3 text-sm text-black/70">
-              <span>
-                Gruppi: <b className="text-black">{state.groups.length}</b>
-              </span>
-              <span>
-                Totale sestine: <b className="text-black">{totalSestine}</b>
-              </span>
-              <span>
-                Unicità globale: <b className="text-black">✅</b>
-              </span>
+            <div className="flex flex-wrap justify-center gap-2">
+              <StatPill label="Gruppi" value={<b>{state.groups.length}</b>} />
+              <StatPill label="Sestine" value={<b>{totalSestine}</b>} />
+              <StatPill
+                label="Unicità"
+                value={<b>✅</b>}
+                tip="Nessuna sestina viene duplicata tra gruppi (ordine non conta)."
+              />
+              <StatPill
+                label="Tip"
+                value={<span className="font-black text-emerald-700">?</span>}
+                tip="Usa i tooltip (hover) per capire seed, vincoli, freeze e probabilità. È tutto client-side."
+              />
             </div>
           </div>
 
-          {/* TABS sotto il titolo */}
-          <div className="inline-flex flex-wrap justify-center gap-2 p-2 rounded-full border border-black/10 bg-white shadow-sm">
+          {/* TABS */}
+          <div className="inline-flex flex-wrap justify-center gap-2 p-2 rounded-full border border-black/10 shadow-sm glass">
             <TabButton
               active={tab === "generate"}
               onClick={() => setTab("generate")}
@@ -986,6 +1144,13 @@ export default function App() {
               ✅ Valida
             </TabButton>
             <TabButton
+              active={tab === "prizes"}
+              onClick={() => setTab("prizes")}
+            >
+              💶 Vincite
+            </TabButton>
+
+            <TabButton
               active={tab === "settings"}
               onClick={() => setTab("settings")}
             >
@@ -996,27 +1161,38 @@ export default function App() {
 
         {/* BANNER */}
         {state.settings.showOddsBanner && (
-          <div className="mt-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3 rounded-2xl border border-black/10 bg-yellow-50 px-4 py-3 shadow-sm">
-            <div className="text-sm text-black/80">{oddsText()}</div>
-            <Button
-              onClick={() =>
-                setState((p) => ({
-                  ...p,
-                  settings: { ...p.settings, showOddsBanner: false },
-                }))
-              }
-              className="self-start md:self-auto"
-            >
-              Nascondi
-            </Button>
-          </div>
+          <Card className="mt-5 p-4 card-glow animate-fadeUp">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div className="text-sm text-black/80">{oddsText()}</div>
+
+              <Button
+                onClick={() =>
+                  setState((p) => ({
+                    ...p,
+                    settings: { ...p.settings, showOddsBanner: false },
+                  }))
+                }
+                className="self-start md:self-auto"
+              >
+                Nascondi
+              </Button>
+            </div>
+          </Card>
         )}
 
         {/* GRID */}
         <main className="mt-5 grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-4 items-start">
           {/* SIDEBAR */}
-          <section className="rounded-2xl border border-black/10 bg-white shadow-sm p-4">
-            <h2 className="text-lg font-extrabold">Gruppi</h2>
+          <Card className="p-4 animate-fadeUp">
+            <SectionTitle
+              title="Gruppi"
+              subtitle="Crea gruppi diversi e genera sestine uniche. Seleziona un gruppo per lavorarci."
+              right={
+                <span className="text-xs font-black px-3 py-1 rounded-full border border-black/10 bg-white/70 glass">
+                  client-only
+                </span>
+              }
+            />
 
             <div className="mt-3 flex gap-2">
               <Input
@@ -1036,12 +1212,16 @@ export default function App() {
                 state.groups.map((g) => (
                   <button
                     key={g.id}
-                    onClick={() => setSelectedGroupId(g.id)}
+                    onClick={() => {
+                      setSelectedGroupId(g.id);
+                      setTab("generate");
+                    }}
                     className={cn(
-                      "text-left p-3 rounded-2xl border transition",
+                      "text-left p-3 rounded-3xl border transition",
+                      "hover:-translate-y-[1px] hover:shadow-sm",
                       g.id === selectedGroupId
-                        ? "bg-blue-50 border-blue-200"
-                        : "bg-white border-black/10 hover:bg-black/[0.03]",
+                        ? "bg-emerald-50 border-emerald-200"
+                        : "bg-white border-black/10 hover:bg-black/[0.02]",
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -1060,14 +1240,20 @@ export default function App() {
 
             <div className="my-4 h-px bg-black/10" />
 
-            <h3 className="text-sm font-extrabold text-black/80">Export</h3>
+            <SectionTitle
+              title="Export"
+              subtitle="CSV per Excel, JSON per backup completo, TXT per condivisione rapida."
+            />
+
             <div className="mt-2 flex flex-wrap gap-2">
               <Button onClick={exportCSV} disabled={totalSestine === 0}>
                 Scarica CSV
               </Button>
+
               <Button onClick={exportJSON} disabled={state.groups.length === 0}>
                 Scarica JSON
               </Button>
+
               <Button
                 disabled={state.groups.length === 0}
                 onClick={() => {
@@ -1094,44 +1280,53 @@ export default function App() {
                 Reset totale
               </Button>
             </div>
-          </section>
+          </Card>
 
           {/* CONTENT */}
-          <section className="rounded-2xl border border-black/10 bg-white shadow-sm p-4">
+          <Card className="p-4 animate-fadeUp">
             {!selectedGroup ? (
               <p className="text-sm text-black/60">
                 Seleziona o crea un gruppo.
               </p>
             ) : tab === "generate" ? (
               <>
-                <div className="flex flex-col gap-2">
-                  <h2 className="text-lg font-extrabold">Generazione</h2>
-                  <div className="text-xs text-black/60">
-                    Vincoli: exclude={constraints.exclude.length}, mustInclude=
-                    {constraints.mustInclude.length}, anyOf=
-                    {constraints.mustIncludeAnyOf.length}
-                    {state.settings.seedEnabled
-                      ? ` · seed="${state.settings.seedValue.trim()}"`
-                      : " · seed OFF"}
-                    {state.settings.superstitionEnabled
-                      ? " · superstizione ON"
-                      : ""}
-                  </div>
-                </div>
+                <SectionTitle
+                  title="Generazione"
+                  subtitle={
+                    <div className="text-xs text-black/60">
+                      <span className="font-bold">
+                        Vincoli: exclude={constraints.exclude.length},
+                        mustInclude={constraints.mustInclude.length}, anyOf=
+                        {constraints.mustIncludeAnyOf.length}
+                      </span>
+
+                      <span className="mx-2 text-black/30">•</span>
+
+                      <span className="font-bold">
+                        {state.settings.seedEnabled
+                          ? `seed="${state.settings.seedValue.trim()}"`
+                          : "seed OFF"}
+                      </span>
+
+                      {state.settings.superstitionEnabled && (
+                        <>
+                          <span className="mx-2 text-black/30">•</span>
+                          <span className="font-bold text-emerald-700">
+                            superstizione ON
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  }
+                />
 
                 <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2 items-center">
-                  <Input
-                    value={selectedGroup.name}
-                    onChange={() => {}}
-                    placeholder="Nome gruppo"
-                    className="hidden"
-                  />
                   <input
                     defaultValue={selectedGroup.name}
                     onBlur={(e) =>
                       renameGroup(selectedGroup.id, e.target.value)
                     }
-                    className="w-full px-3 py-2 rounded-xl border border-black/10 bg-white outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-200"
+                    className="w-full px-3 py-2 rounded-2xl border border-black/10 bg-white outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition"
                   />
                   <Button
                     variant="danger"
@@ -1148,12 +1343,14 @@ export default function App() {
                     onChange={(e) => setCountToGenerate(Number(e.target.value))}
                     placeholder="N"
                   />
+
                   <PrimaryButton
                     onClick={generateForSelectedGroup}
                     loading={isGenerating}
                   >
                     Genera
                   </PrimaryButton>
+
                   <Button
                     onClick={() => regenerateNonFrozenInGroup(selectedGroup.id)}
                     disabled={selectedGroup.sestine.length === 0}
@@ -1161,6 +1358,7 @@ export default function App() {
                   >
                     Rigenera NON bloccate
                   </Button>
+
                   <Button
                     variant="danger"
                     onClick={() => clearGroup(selectedGroup.id)}
@@ -1173,12 +1371,13 @@ export default function App() {
                 </div>
 
                 {selectedGroup.sestine.length > 0 && groupBestDist && (
-                  <div className="mt-4 rounded-2xl border border-black/10 bg-white p-4">
+                  <div className="mt-4 rounded-3xl border border-black/10 bg-white p-4 animate-fadeUp">
                     <div className="flex items-baseline justify-between gap-3">
                       <div className="text-sm font-extrabold text-black/80">
                         Probabilità teoriche (miglior risultato su{" "}
                         {selectedGroup.sestine.length} sestine)
                       </div>
+
                       <div className="text-xs text-black/60">
                         modello: sestine random ~ indipendenti
                       </div>
@@ -1195,9 +1394,9 @@ export default function App() {
                             <div className="text-sm font-black text-black/80">
                               {m} / 6
                             </div>
-                            <div className="h-2 rounded-full bg-black/10 overflow-hidden">
+                            <div className="h-2 rounded-full bg-emerald-100 overflow-hidden">
                               <div
-                                className="h-full bg-blue-500/60"
+                                className="h-full bg-emerald-500/60"
                                 style={{ width: `${Math.min(100, pct)}%` }}
                               />
                             </div>
@@ -1212,7 +1411,7 @@ export default function App() {
                     <div className="mt-3 text-xs text-black/60">
                       Interpretazione: probabilità che, su una singola
                       estrazione, il tuo miglior biglietto tra i{" "}
-                      {selectedGroup.sestine.length} faccia esattamente quel
+                      {selectedGroup.sestine.length} faccia almeno quel
                       risultato.
                     </div>
                   </div>
@@ -1226,12 +1425,12 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      {/* Controls paginazione */}
-                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 rounded-2xl border border-black/10 bg-white p-3">
+                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 rounded-3xl border border-black/10 bg-white p-3 animate-fadeUp">
                         <div className="flex flex-wrap items-center gap-2 text-sm text-black/70">
                           <span className="font-bold text-black/80">
                             Paginazione
                           </span>
+
                           <span>
                             Mostro <b className="text-black">{pageStart + 1}</b>
                             –<b className="text-black">{pageEnd}</b> su{" "}
@@ -1252,7 +1451,7 @@ export default function App() {
                             onChange={(e) =>
                               setPageSize(Number(e.target.value))
                             }
-                            className="px-3 py-2 rounded-xl border border-black/10 bg-white text-sm font-bold"
+                            className="px-3 py-2 rounded-2xl border border-black/10 bg-white text-sm font-bold focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300"
                           >
                             {[50, 100, 200, 500, 1000].map((n) => (
                               <option key={n} value={n}>
@@ -1298,8 +1497,7 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Virtualized list */}
-                      <div className="mt-3 rounded-2xl border border-black/10 bg-white overflow-hidden">
+                      <div className="mt-3 rounded-3xl border border-black/10 bg-white overflow-hidden animate-fadeUp">
                         <SestineVirtualList
                           items={pageSestine}
                           evenOdd={evenOdd}
@@ -1315,18 +1513,19 @@ export default function App() {
                       </div>
 
                       <div className="mt-2 text-xs text-black/60">
-                        Nota: la lista è virtualizzata (renderizza solo gli
-                        elementi visibili), quindi resta fluida anche con
-                        tantissime sestine.
+                        Nota: lista virtualizzata (renderizza solo gli elementi
+                        visibili). Per dataset enormi, il collo di bottiglia
+                        diventa lo storage.
                       </div>
                     </>
                   )}
                 </div>
 
                 <div className="mt-5 border-t border-black/10 pt-4">
-                  <h3 className="text-sm font-extrabold text-black/80">
-                    Timeline
-                  </h3>
+                  <SectionTitle
+                    title="Timeline"
+                    subtitle="Cronologia operazioni (ultimi 20). Utile per capire cosa hai generato e con quali impostazioni."
+                  />
                   <div className="mt-2 flex flex-col gap-2">
                     {selectedGroup.events.length === 0 ? (
                       <div className="text-sm text-black/60">
@@ -1336,7 +1535,7 @@ export default function App() {
                       selectedGroup.events.slice(0, 20).map((ev, idx) => (
                         <div
                           key={idx}
-                          className="rounded-2xl border border-black/10 bg-white p-3"
+                          className="rounded-3xl border border-black/10 bg-white p-3 animate-fadeUp"
                         >
                           <div className="text-xs text-black/60">
                             {new Date(ev.at).toLocaleString()}
@@ -1363,9 +1562,10 @@ export default function App() {
               </>
             ) : tab === "stats" ? (
               <>
-                <h2 className="text-lg font-extrabold">
-                  Statistiche (gruppo selezionato)
-                </h2>
+                <SectionTitle
+                  title="Statistiche (gruppo selezionato)"
+                  subtitle="Analisi frequenze sui numeri generati nel gruppo."
+                />
 
                 {selectedGroup.sestine.length === 0 ? (
                   <p className="mt-2 text-sm text-black/60">
@@ -1374,9 +1574,10 @@ export default function App() {
                 ) : (
                   <>
                     <div className="mt-4">
-                      <h3 className="text-sm font-extrabold text-black/80">
-                        Top 10 numeri
-                      </h3>
+                      <SectionTitle
+                        title="Top 10 numeri"
+                        subtitle="Quanti “capitano” più spesso nelle tue generazioni (non significa che siano migliori)."
+                      />
                       <div className="mt-3 flex flex-col gap-3">
                         {top10.map((x) => (
                           <div
@@ -1394,9 +1595,10 @@ export default function App() {
                     </div>
 
                     <div className="mt-6">
-                      <h3 className="text-sm font-extrabold text-black/80">
-                        Numeri mai usciti ({missing.length})
-                      </h3>
+                      <SectionTitle
+                        title={`Numeri mai usciti (${missing.length})`}
+                        subtitle="Se ti piace la superstizione, qui c’è materiale."
+                      />
                       <div className="mt-3 flex flex-wrap gap-2">
                         {missing.map((n) => (
                           <span
@@ -1411,15 +1613,90 @@ export default function App() {
                   </>
                 )}
               </>
-            ) : tab === "validate" ? (
+            ) : tab === "prizes" ? (
               <>
                 <h2 className="text-lg font-extrabold">
-                  Validatore estrazione
+                  Vincite SuperEnalotto (info)
                 </h2>
-                <p className="mt-1 text-sm text-black/60">
-                  Inserisci i <b>6 numeri estratti</b>. Jolly e SuperStar
-                  opzionali. Risultato in report (modal).
-                </p>
+
+                <div className="mt-3 rounded-2xl border border-black/10 bg-white p-4">
+                  <div className="text-sm font-extrabold text-black/80">
+                    Jackpot attuale (manuale)
+                  </div>
+                  <div className="mt-2 grid grid-cols-1 md:grid-cols-[240px_1fr] gap-2 items-center">
+                    <Input
+                      type="number"
+                      value={String(jackpotEuro)}
+                      onChange={(e) => setJackpotEuro(Number(e.target.value))}
+                      placeholder="es: 115000000"
+                    />
+                    <div className="text-xs text-black/60">
+                      Usato anche per la stima nel Validatore. (Persistente nel
+                      browser)
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-2xl border border-black/10 bg-white overflow-hidden">
+                  <div className="p-4 border-b border-black/10">
+                    <div className="text-sm font-extrabold text-black/80">
+                      Tabella vincite
+                    </div>
+                    <div className="text-xs text-black/60">
+                      Probabilità teoriche + quote medie attese
+                    </div>
+                  </div>
+
+                  <div className="overflow-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-neutral-50">
+                        <tr className="text-left">
+                          <th className="p-3 font-extrabold text-black/70">
+                            Numeri indovinati
+                          </th>
+                          <th className="p-3 font-extrabold text-black/70">
+                            Probabilità
+                          </th>
+                          <th className="p-3 font-extrabold text-black/70">
+                            Quote medie attese
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {PRIZE_TABLE.map((r) => (
+                          <tr key={r.label} className="border-t border-black/5">
+                            <td className="p-3 font-black">{r.label}</td>
+                            <td className="p-3 text-black/70">
+                              {r.probability}
+                            </td>
+                            <td className="p-3 font-extrabold">
+                              {r.isJackpot
+                                ? formatEUR(jackpotEuro)
+                                : r.expected}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="p-4 text-[11px] text-black/50">
+                    Il “5+1” = 5 numeri + Jolly. Queste sono stime informative
+                    (non ufficiali).
+                  </div>
+                </div>
+              </>
+            ) : tab === "validate" ? (
+              <>
+                <SectionTitle
+                  title="Validatore estrazione"
+                  subtitle={
+                    <>
+                      Inserisci i <b>6 numeri estratti</b>. Jolly e SuperStar
+                      opzionali. Ottieni un report dettagliato (modal).
+                    </>
+                  }
+                />
 
                 <div className="mt-4 grid grid-cols-1 gap-2">
                   <Input
@@ -1441,7 +1718,7 @@ export default function App() {
                   </div>
 
                   {validationError && (
-                    <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
+                    <div className="rounded-3xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800 animate-fadeUp">
                       {validationError}
                     </div>
                   )}
@@ -1460,7 +1737,6 @@ export default function App() {
                         setValidationError(null);
                         setValidationResult(null);
                       }}
-                      disabled={false}
                     >
                       Reset report
                     </Button>
@@ -1474,12 +1750,16 @@ export default function App() {
               </>
             ) : (
               <>
-                <h2 className="text-lg font-extrabold">Impostazioni</h2>
+                <SectionTitle
+                  title="Impostazioni"
+                  subtitle="Personalizza seed, vincoli, superstizione e highlight UI."
+                />
 
-                <div className="mt-4 rounded-2xl border border-black/10 bg-white p-4">
-                  <h3 className="text-sm font-extrabold text-black/80">
-                    Seed riproducibile
-                  </h3>
+                <div className="mt-4 rounded-3xl border border-black/10 bg-white p-4">
+                  <SectionTitle
+                    title="Seed riproducibile"
+                    subtitle="Utile per ripetere la stessa sequenza (a parità di condizioni)."
+                  />
                   <div className="mt-3 flex flex-col gap-2">
                     <Toggle
                       checked={state.settings.seedEnabled}
@@ -1490,6 +1770,7 @@ export default function App() {
                         }))
                       }
                       label="Usa seed"
+                      tip="Seed ON: ripetibilità. Seed OFF: random. Non cambia le probabilità, cambia solo la sequenza."
                     />
                     <Input
                       value={state.settings.seedValue}
@@ -1505,17 +1786,14 @@ export default function App() {
                       placeholder="Seed (stringa)"
                       disabled={!state.settings.seedEnabled}
                     />
-                    <div className="text-xs text-black/60">
-                      Stesso seed + stessi vincoli → sequenze riproducibili (ma
-                      unicità globale resta).
-                    </div>
                   </div>
                 </div>
 
-                <div className="mt-3 rounded-2xl border border-black/10 bg-white p-4">
-                  <h3 className="text-sm font-extrabold text-black/80">
-                    Vincoli
-                  </h3>
+                <div className="mt-3 rounded-3xl border border-black/10 bg-white p-4">
+                  <SectionTitle
+                    title="Vincoli"
+                    subtitle="I vincoli filtrano le sestine. Troppi vincoli possono rendere la generazione impossibile."
+                  />
                   <div className="mt-3 flex flex-col gap-2">
                     <Input
                       value={state.settings.exclude.join(",")}
@@ -1559,17 +1837,14 @@ export default function App() {
                       }
                       placeholder="Almeno uno tra (es: 7,21,90)"
                     />
-                    <div className="text-xs text-black/60">
-                      Nota: se metti troppi “obbligatori” (&gt; 6) la
-                      generazione fallirà.
-                    </div>
                   </div>
                 </div>
 
-                <div className="mt-3 rounded-2xl border border-black/10 bg-white p-4">
-                  <h3 className="text-sm font-extrabold text-black/80">
-                    Modalità superstizione (gimmick)
-                  </h3>
+                <div className="mt-3 rounded-3xl border border-black/10 bg-white p-4">
+                  <SectionTitle
+                    title="Modalità superstizione (gimmick)"
+                    subtitle="Non migliora le probabilità. Serve solo a “guidare” la generazione."
+                  />
                   <div className="mt-3 flex flex-col gap-2">
                     <Toggle
                       checked={state.settings.superstitionEnabled}
@@ -1580,6 +1855,7 @@ export default function App() {
                         }))
                       }
                       label="Abilita"
+                      tip="Se attiva: i “sfortunati” finiscono in exclude; i “fortunati” spingono anyOf."
                     />
                     <Input
                       value={state.settings.luckyNumbers.join(",")}
@@ -1623,23 +1899,20 @@ export default function App() {
                         }))
                       }
                       className={cn(
-                        "w-full px-3 py-2 rounded-xl border border-black/10 bg-white outline-none",
-                        "focus:ring-2 focus:ring-blue-200 focus:border-blue-200",
+                        "w-full px-3 py-2 rounded-2xl border border-black/10 bg-white outline-none transition",
+                        "focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300",
                         !state.settings.superstitionEnabled &&
                           "bg-black/5 text-black/40 cursor-not-allowed",
                       )}
                     />
-                    <div className="text-xs text-black/60">
-                      Se attivo, i “sfortunati” finiscono in exclude e i
-                      “fortunati” spingono anyOf.
-                    </div>
                   </div>
                 </div>
 
-                <div className="mt-3 rounded-2xl border border-black/10 bg-white p-4">
-                  <h3 className="text-sm font-extrabold text-black/80">
-                    Evidenziazioni UI
-                  </h3>
+                <div className="mt-3 rounded-3xl border border-black/10 bg-white p-4">
+                  <SectionTitle
+                    title="Evidenziazioni UI"
+                    subtitle="Solo un aiuto visivo: non cambia nulla a livello matematico."
+                  />
                   <div className="mt-3 flex flex-col md:flex-row gap-4">
                     <Toggle
                       checked={state.settings.highlightEvenOdd}
@@ -1650,6 +1923,7 @@ export default function App() {
                         }))
                       }
                       label="Pari/Dispari"
+                      tip="Aggiunge un ring lieve per distinguere pari/dispari."
                     />
                     <Toggle
                       checked={state.settings.highlightLowHigh}
@@ -1660,14 +1934,16 @@ export default function App() {
                         }))
                       }
                       label="Bassi/Alti (≤45 / ≥46)"
+                      tip="Evidenzia leggermente i numeri alti."
                     />
                   </div>
                 </div>
 
-                <div className="mt-3 rounded-2xl border border-black/10 bg-white p-4">
-                  <h3 className="text-sm font-extrabold text-black/80">
-                    Banner probabilità
-                  </h3>
+                <div className="mt-3 rounded-3xl border border-black/10 bg-white p-4">
+                  <SectionTitle
+                    title="Banner probabilità"
+                    subtitle="Consigliato ON: evita deliri cognitivi."
+                  />
                   <div className="mt-3">
                     <Toggle
                       checked={state.settings.showOddsBanner}
@@ -1683,22 +1959,22 @@ export default function App() {
                 </div>
 
                 <div className="mt-3 text-xs text-black/60">
-                  PWA: resta come l’hai già impostata con vite-plugin-pwa (non
-                  dipende da Tailwind).
+                  PWA: già ok. Ricorda: offline = asset in cache + dati in
+                  localStorage.
                 </div>
               </>
             )}
-          </section>
+          </Card>
         </main>
 
         {/* VALIDATION MODAL */}
         {validationResult && (
           <div
-            className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+            className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-overlayIn"
             onMouseDown={() => setValidationResult(null)}
           >
             <div
-              className="w-full max-w-5xl max-h-[88vh] overflow-auto rounded-2xl border border-black/10 bg-white shadow-xl"
+              className="w-full max-w-5xl max-h-[88vh] overflow-auto rounded-3xl border border-black/10 bg-white shadow-xl animate-popIn"
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="sticky top-0 bg-white border-b border-black/10 p-4 flex items-start justify-between gap-3">
@@ -1719,7 +1995,7 @@ export default function App() {
               </div>
 
               <div className="p-4">
-                <div className="rounded-2xl border border-black/10 bg-white p-4">
+                <div className="rounded-3xl border border-black/10 bg-white p-4">
                   <div className="text-sm font-extrabold text-black/80">
                     Numeri estratti
                   </div>
@@ -1727,7 +2003,7 @@ export default function App() {
                     {validationResult.draw.map((n) => (
                       <span
                         key={n}
-                        className="inline-flex items-center justify-center min-w-[34px] h-8 px-3 rounded-full border border-green-500/30 bg-green-500/10 text-sm font-black"
+                        className="inline-flex items-center justify-center min-w-[34px] h-8 px-3 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-sm font-black text-emerald-900"
                       >
                         {n}
                       </span>
@@ -1750,7 +2026,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="mt-4 rounded-2xl border border-black/10 bg-white p-4">
+                <div className="mt-4 rounded-3xl border border-black/10 bg-white p-4">
                   <div className="text-sm font-extrabold text-black/80">
                     Riepilogo
                   </div>
@@ -1758,7 +2034,7 @@ export default function App() {
                     {[6, 5, 4, 3, 2, 1, 0].map((k) => (
                       <div
                         key={k}
-                        className="rounded-2xl border border-black/10 bg-neutral-50 p-3"
+                        className="rounded-3xl border border-black/10 bg-neutral-50 p-3"
                       >
                         <div className="text-xs font-black text-black/70">
                           {k} / 6
@@ -1772,6 +2048,66 @@ export default function App() {
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-black/10 bg-white p-4">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div className="text-sm font-extrabold text-black/80">
+                      Stima vincite (quote medie)
+                    </div>
+                    <div className="text-xs text-black/60">
+                      Jackpot usato:{" "}
+                      <b className="text-black">{formatEUR(jackpotEuro)}</b>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                    {(["6", "5+1", "5", "4", "3", "2"] as const).map((k) => {
+                      const count = validationResult.prizeCounts[k] ?? 0;
+                      const per =
+                        k === "6"
+                          ? jackpotEuro
+                          : k === "5+1"
+                            ? 620000
+                            : k === "5"
+                              ? 32000
+                              : k === "4"
+                                ? 300
+                                : k === "3"
+                                  ? 25
+                                  : 5;
+
+                      return (
+                        <div
+                          key={k}
+                          className="rounded-2xl border border-black/10 bg-neutral-50 p-3 flex items-center justify-between"
+                        >
+                          <div className="font-extrabold text-black/80">
+                            {k}{" "}
+                            <span className="text-black/40 font-black">×</span>{" "}
+                            {count}
+                          </div>
+                          <div className="font-black text-black">
+                            {formatEUR(count * per)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 flex items-center justify-between">
+                    <div className="text-sm font-extrabold text-emerald-900">
+                      Totale stimato
+                    </div>
+                    <div className="text-lg font-black text-emerald-900">
+                      {formatEUR(validationResult.estimatedTotalEuro)}
+                    </div>
+                  </div>
+
+                  <div className="mt-2 text-[11px] text-black/50">
+                    Nota: sono “quote medie attese”/valori indicativi. Le
+                    vincite reali variano per concorso e ripartizione.
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-3xl border border-black/10 bg-white p-4">
                   <div className="text-sm font-extrabold text-black/80">
                     Dettaglio sestine (ordinate per match)
                   </div>
@@ -1780,9 +2116,9 @@ export default function App() {
                       <div
                         key={r.key}
                         className={cn(
-                          "rounded-2xl border p-3",
+                          "rounded-3xl border p-3",
                           r.frozen
-                            ? "bg-blue-50 border-blue-200"
+                            ? "bg-emerald-50 border-emerald-200"
                             : "bg-white border-black/10",
                         )}
                       >
@@ -1791,17 +2127,17 @@ export default function App() {
                             {r.hits} match
                           </span>
                           {r.jollyHit && (
-                            <span className="text-xs font-black px-2 py-1 rounded-full border border-green-500/25 bg-green-500/10">
+                            <span className="text-xs font-black px-2 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-900">
                               Jolly
                             </span>
                           )}
                           {r.superstarHit && (
-                            <span className="text-xs font-black px-2 py-1 rounded-full border border-green-500/25 bg-green-500/10">
+                            <span className="text-xs font-black px-2 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-900">
                               SuperStar
                             </span>
                           )}
                           {r.frozen && (
-                            <span className="text-xs font-black px-2 py-1 rounded-full border border-blue-500/25 bg-blue-500/10">
+                            <span className="text-xs font-black px-2 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-900">
                               Bloccata
                             </span>
                           )}
@@ -1836,9 +2172,10 @@ export default function App() {
           </div>
         )}
 
+        {/* GENERATION MODAL */}
         {genModal && (
-          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-            <div className="w-full max-w-lg rounded-2xl border border-black/10 bg-white shadow-xl p-4">
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-overlayIn">
+            <div className="w-full max-w-lg rounded-3xl border border-black/10 bg-white shadow-xl p-4 animate-popIn">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-xs text-black/60">
@@ -1870,9 +2207,9 @@ export default function App() {
                     %
                   </span>
                 </div>
-                <div className="mt-2 h-2 rounded-full bg-black/10 overflow-hidden">
+                <div className="mt-2 h-2 rounded-full bg-emerald-100 overflow-hidden">
                   <div
-                    className="h-full bg-blue-500/60"
+                    className="h-full bg-emerald-500/60"
                     style={{
                       width: `${genModal.total ? (genModal.done / genModal.total) * 100 : 0}%`,
                     }}
@@ -1886,10 +2223,10 @@ export default function App() {
           </div>
         )}
 
-        <footer className="mt-10 border-t border-black/10 bg-white">
+        {/* FOOTER */}
+        <footer className="mt-10 border-t border-black/10 bg-white/70 glass rounded-3xl">
           <div className="mx-auto max-w-6xl px-4 py-6">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 text-sm text-black/70">
-              {/* Left */}
               <div className="text-center md:text-left">
                 <div className="font-extrabold text-black">
                   SuperEnalotto Sestine
@@ -1899,13 +2236,12 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Center */}
               <div className="flex justify-center gap-4 text-sm">
                 <a
                   href="https://github.com/AleMoz97"
                   target="_blank"
                   rel="noreferrer"
-                  className="font-bold hover:text-black transition"
+                  className="font-bold hover:text-emerald-700 transition"
                 >
                   GitHub
                 </a>
@@ -1913,21 +2249,20 @@ export default function App() {
                   href="https://www.linkedin.com/in/alessandro-mozzato-32479420b/"
                   target="_blank"
                   rel="noreferrer"
-                  className="font-bold hover:text-black transition"
+                  className="font-bold hover:text-emerald-700 transition"
                 >
                   LinkedIn
                 </a>
                 <a
                   href="mailto:alessandromozzato8@gmail.com"
-                  className="font-bold hover:text-black transition"
+                  className="font-bold hover:text-emerald-700 transition"
                 >
                   Contatto
                 </a>
               </div>
 
-              {/* Right */}
               <div className="text-center md:text-right text-xs text-black/50">
-                © {new Date().getFullYear()} ·
+                © {new Date().getFullYear()} ·{" "}
                 <span className="ml-1">
                   Creato da <b className="text-black">Alessandro Mozzato</b>
                 </span>

@@ -21,3 +21,108 @@
   .animate-titleShine { animation: titleShine 4.0s ease-in-out infinite; }
 }
 
+@layer utilities {
+  /* Subtle entrance */
+  @keyframes fadeUp {
+    0% { opacity: 0; transform: translateY(8px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  .animate-fadeUp { animation: fadeUp .35s ease-out both; }
+
+  /* Modal overlay + panel */
+  @keyframes overlayIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .animate-overlayIn { animation: overlayIn .18s ease-out both; }
+
+  @keyframes popIn {
+    0% { opacity: 0; transform: translateY(10px) scale(.98); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .animate-popIn { animation: popIn .22s ease-out both; }
+
+  /* Glow border for primary cards */
+  .card-glow {
+    box-shadow:
+      0 1px 0 rgba(0,0,0,.04),
+      0 10px 30px rgba(16,185,129,.10);
+  }
+
+  /* Tooltip */
+.tip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  isolation: isolate; /* evita stacking strani */
+}
+
+.tip {
+  position: absolute;
+  z-index: 9999;
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s ease, transform .15s ease;
+  max-width: min(360px, 92vw);
+  width: max-content;
+}
+
+.tip-wrap:hover .tip,
+.tip-wrap:focus-within .tip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* default: sopra */
+.tip-top {
+  bottom: calc(100% + 10px);
+}
+
+/* sotto */
+.tip-bottom {
+  top: calc(100% + 10px);
+  bottom: auto;
+}
+
+.tip-box {
+  background: rgba(255,255,255,.98);
+  border: 1px solid rgba(0,0,0,.10);
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.14);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: rgba(0,0,0,.75);
+  line-height: 1.35;
+}
+
+.tip-arrow {
+  position: absolute;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translateX(-50%) rotate(45deg);
+  background: rgba(255,255,255,.98);
+  border-right: 1px solid rgba(0,0,0,.10);
+  border-bottom: 1px solid rgba(0,0,0,.10);
+}
+
+/* freccia per top (punta in basso) */
+.tip-top .tip-arrow {
+  bottom: -6px;
+}
+
+/* freccia per bottom (punta in alto) */
+.tip-bottom .tip-arrow {
+  top: -6px;
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid rgba(0,0,0,.10);
+  border-top: 1px solid rgba(0,0,0,.10);
+}
+
+}
+
+
