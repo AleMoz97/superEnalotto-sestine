@@ -13,8 +13,11 @@ import { toCSV, downloadTextFile, toTXT } from "./lib/exporters";
 import { frequencyMap, topNumbers, missingNumbers } from "./lib/stats";
 import { rngFromSeed, mulberry32 } from "./lib/rng";
 import { generateUniqueSestine, type Constraints } from "./lib/sestine";
+import ImportPanel from "./components/ImportPanel";
+import PlayAssistPanel from "./components/PlayAssistantPanel";
+import Onboarding, { shouldShowOnboarding } from "./components/Onboarding";
 
-type Tab = "generate" | "stats" | "validate" | "prizes" | "settings";
+type Tab = "generate" | "stats" | "validate" | "prizes" | "play" | "settings";
 
 type ValidationRow = {
   key: string;
@@ -95,6 +98,32 @@ function formatEUR(n: number) {
     currency: "EUR",
     maximumFractionDigits: 0,
   });
+}
+
+import { createPortal } from "react-dom";
+
+function FullscreenModal({
+  children,
+  onClose,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] bg-black/60 flex items-center justify-center p-4"
+      onMouseDown={onClose}
+    >
+      <div
+        className="w-full max-w-6xl max-h-[90vh] overflow-auto rounded-3xl border border-black/10 bg-white shadow-2xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="p-4">{children}</div>
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 function estimateTicketWinEUR(
@@ -191,7 +220,8 @@ function birthDateToLucky(date?: string): number[] {
 function Card({
   children,
   className,
-}: {
+  ...rest
+}: React.HTMLAttributes<HTMLDivElement> & {
   children: React.ReactNode;
   className?: string;
 }) {
@@ -203,6 +233,7 @@ function Card({
         "hover:-translate-y-[1px] hover:shadow-md",
         className,
       )}
+      {...rest}
     >
       {children}
     </div>
@@ -254,22 +285,23 @@ function StatPill({
 function TabButton({
   active,
   children,
-  onClick,
-}: {
+  className,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   active: boolean;
   children: React.ReactNode;
-  onClick: () => void;
 }) {
   return (
     <button
-      onClick={onClick}
       className={cn(
         "px-4 py-2 rounded-full text-sm font-extrabold border transition select-none",
         "hover:shadow-sm",
         active
           ? "bg-emerald-50 border-emerald-200 text-emerald-900"
           : "bg-white/80 border-black/10 text-black/80 hover:bg-black/[0.03]",
+        className,
       )}
+      {...rest}
     >
       {children}
     </button>
@@ -524,9 +556,15 @@ function SestineVirtualList({
         >
           <div className="min-w-0">
             <div className="flex flex-wrap gap-2">
-              {s.nums.map((n) => (
-                <Chip key={n} n={n} evenOdd={rp.evenOdd} lowHigh={rp.lowHigh} />
-              ))}
+              {Array.isArray(s.nums) ? (
+                s.nums.map((n) => (
+                  <Chip key={n} n={n} evenOdd={evenOdd} lowHigh={lowHigh} />
+                ))
+              ) : (
+                <span className="text-sm text-red-700 font-bold">
+                  Sestina corrotta (nums non valido)
+                </span>
+              )}
             </div>
 
             <div className="mt-2 text-xs text-black/55 font-mono break-all">
@@ -575,6 +613,7 @@ function SestineVirtualList({
 export default function App() {
   const [state, setState] = useState<AppState>(() => loadState());
   const [tab, setTab] = useState<Tab>("generate");
+  const [showImport, setShowImport] = useState(false);
 
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(
     () => state.groups[0]?.id ?? null,
@@ -598,6 +637,7 @@ export default function App() {
     total: number;
     done: number;
   }>(null);
+  const [wide, setWide] = useState(false);
 
   // Pagination UI
   const [pageSize, setPageSize] = useState<number>(200);
@@ -607,6 +647,21 @@ export default function App() {
     const n = raw ? Number(raw) : 115_000_000;
     return Number.isFinite(n) && n > 0 ? n : 115_000_000;
   });
+  const onboardingKey = "sextina_onboarding_done";
+  const onboardingVersion = "v1";
+
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    try {
+      return shouldShowOnboarding(onboardingKey, onboardingVersion);
+    } catch {
+      return false;
+    }
+  });
+
+  function restartOnboarding() {
+    localStorage.removeItem(`${onboardingKey}:${onboardingVersion}`);
+    setShowOnboarding(true);
+  }
 
   useEffect(() => {
     localStorage.setItem("superenalotto_jackpot_eur", String(jackpotEuro));
@@ -1052,7 +1107,12 @@ export default function App() {
 
       <div className="mx-auto max-w-6xl px-4 py-6">
         {/* HEADER */}
-        <header className="flex flex-col items-center text-center gap-3 animate-fadeUp">
+        <header className="relative flex flex-col items-center text-center gap-3 animate-fadeUp">
+          <div className="absolute right-0 top-0">
+            <Button onClick={restartOnboarding} className="px-3 py-2">
+              ℹ️ Tutorial
+            </Button>
+          </div>
           <div className="flex flex-col items-center gap-2">
             <div className="relative">
               <h1
@@ -1106,6 +1166,7 @@ export default function App() {
             <TabButton
               active={tab === "generate"}
               onClick={() => setTab("generate")}
+              data-onb="tab-generate"
             >
               🎲 Genera
             </TabButton>
@@ -1115,19 +1176,30 @@ export default function App() {
             <TabButton
               active={tab === "validate"}
               onClick={() => setTab("validate")}
+              data-onb="tab-validate"
             >
               ✅ Valida
             </TabButton>
             <TabButton
               active={tab === "prizes"}
               onClick={() => setTab("prizes")}
+              data-onb="tab-win"
             >
               💶 Vincite
             </TabButton>
 
             <TabButton
+              active={tab === "play"}
+              onClick={() => setTab("play")}
+              data-onb="tab-play"
+            >
+              🎮​ Gioca
+            </TabButton>
+
+            <TabButton
               active={tab === "settings"}
               onClick={() => setTab("settings")}
+              data-onb="tab-settings"
             >
               ⚙️ Impostazioni
             </TabButton>
@@ -1156,144 +1228,205 @@ export default function App() {
         )}
 
         {/* GRID */}
-        <main className="mt-5 grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-4 items-start">
+        <main
+          className={cn(
+            "mt-5 grid grid-cols-1 gap-4 items-start",
+            wide ? "lg:grid-cols-[64px_1fr]" : "lg:grid-cols-[380px_1fr]",
+          )}
+        >
           {/* SIDEBAR */}
-          <Card className="p-4 animate-fadeUp">
-            <SectionTitle
-              title="Gruppi"
-              subtitle="Crea gruppi diversi e genera sestine uniche. Seleziona un gruppo per lavorarci."
-              right={
-                <span className="text-xs font-black px-3 py-1 rounded-full border border-black/10 bg-white/70 glass">
-                  client-only
-                </span>
-              }
-            />
+          <Card
+            className={cn(
+              "animate-fadeUp transition-all duration-200 overflow-hidden",
+              wide ? "p-2" : "p-4",
+            )}
+            data-onb="groups"
+          >
+            {wide ? (
+              <div className="flex flex-col items-stretch gap-2">
+                <Button
+                  onClick={() => setWide(false)}
+                  className="w-full h-12 px-0 flex items-center justify-center"
+                >
+                  {/* icona semplice senza librerie */}
+                  <span className="text-lg">⟩</span>
+                </Button>
 
-            <div className="mt-3 flex gap-2">
-              <Input
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                placeholder="Nome gruppo"
-              />
-              <PrimaryButton onClick={addGroup}>Crea</PrimaryButton>
-            </div>
-
-            <div className="mt-3 flex flex-col gap-2">
-              {state.groups.length === 0 ? (
-                <p className="text-sm text-black/60">
-                  Nessun gruppo. Creane uno.
-                </p>
-              ) : (
-                state.groups.map((g) => (
-                  <button
-                    key={g.id}
-                    onClick={() => {
-                      setSelectedGroupId(g.id);
-                      setTab("generate");
-                    }}
-                    className={cn(
-                      "text-left p-3 rounded-3xl border transition",
-                      "hover:-translate-y-[1px] hover:shadow-sm",
-                      g.id === selectedGroupId
-                        ? "bg-emerald-50 border-emerald-200"
-                        : "bg-white border-black/10 hover:bg-black/[0.02]",
-                    )}
+                <div className="text-[10px] text-black/50 text-center leading-tight">
+                  menu
+                </div>
+              </div>
+            ) : (
+              // SIDEBAR COMPLETA quando wide=false
+              <>
+                {/* Toggle layout qui, vicino ai gruppi */}
+                <div className="mb-3">
+                  <Button
+                    onClick={() => setWide(true)}
+                    className="w-full h-12 flex items-center justify-center"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-extrabold">{g.name}</span>
-                      <span className="text-xs font-black px-2 py-0.5 rounded-full bg-black/5 border border-black/10">
-                        {g.sestine.length}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-xs text-black/60">
-                      {new Date(g.createdAt).toLocaleString()}
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
+                    <span className="text-xl leading-none">⟨</span>
+                  </Button>
+                </div>
 
-            <div className="my-4 h-px bg-black/10" />
+                <SectionTitle
+                  title="Gruppi"
+                  subtitle="Crea gruppi diversi e genera sestine uniche. Seleziona un gruppo per lavorarci."
+                  right={
+                    <span className="text-xs font-black px-3 py-1 rounded-full border border-black/10 bg-white/70 glass">
+                      client-only
+                    </span>
+                  }
+                />
 
-            <SectionTitle
-              title="Export"
-              subtitle="CSV per Excel, JSON per backup completo, TXT per condivisione rapida."
-            />
+                <div className="mt-3 flex gap-2">
+                  <Input
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder="Nome gruppo"
+                  />
+                  <PrimaryButton onClick={addGroup}>Crea</PrimaryButton>
+                </div>
 
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Button onClick={exportCSV} disabled={totalSestine === 0}>
-                Scarica CSV
-              </Button>
+                <div className="mt-3 flex flex-col gap-2">
+                  {state.groups.length === 0 ? (
+                    <p className="text-sm text-black/60">
+                      Nessun gruppo. Creane uno.
+                    </p>
+                  ) : (
+                    state.groups.map((g) => (
+                      <button
+                        key={g.id}
+                        onClick={() => {
+                          setSelectedGroupId(g.id);
+                          setTab("generate");
+                        }}
+                        className={cn(
+                          "text-left p-3 rounded-3xl border transition",
+                          "hover:-translate-y-[1px] hover:shadow-sm",
+                          g.id === selectedGroupId
+                            ? "bg-emerald-50 border-emerald-200"
+                            : "bg-white border-black/10 hover:bg-black/[0.02]",
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-extrabold">{g.name}</span>
+                          <span className="text-xs font-black px-2 py-0.5 rounded-full bg-black/5 border border-black/10">
+                            {g.sestine.length}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-black/60">
+                          {new Date(g.createdAt).toLocaleString()}
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
 
-              <Button onClick={exportJSON} disabled={state.groups.length === 0}>
-                Scarica JSON
-              </Button>
+                <div className="my-4 h-px bg-black/10" />
 
-              <Button
-                disabled={state.groups.length === 0}
-                onClick={() => {
-                  const txt = toTXT(state);
-                  const ts = new Date().toISOString().replaceAll(":", "-");
-                  downloadTextFile(
-                    `sestine_${ts}.txt`,
-                    txt,
-                    "text/plain;charset=utf-8",
-                  );
-                }}
-              >
-                Scarica TXT
-              </Button>
-            </div>
+                <SectionTitle
+                  title="Export"
+                  subtitle="CSV per Excel, JSON per backup completo, TXT per condivisione rapida."
+                />
 
-            <div className="mt-3">
-              <Button
-                onClick={resetAll}
-                disabled={state.groups.length === 0}
-                variant="danger"
-                className="w-full"
-              >
-                Reset totale
-              </Button>
-            </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button onClick={exportCSV} disabled={totalSestine === 0}>
+                    Scarica CSV
+                  </Button>
+
+                  <Button
+                    onClick={exportJSON}
+                    disabled={state.groups.length === 0}
+                  >
+                    Scarica JSON
+                  </Button>
+
+                  <Button
+                    disabled={state.groups.length === 0}
+                    onClick={() => {
+                      const txt = toTXT(state);
+                      const ts = new Date().toISOString().replaceAll(":", "-");
+                      downloadTextFile(
+                        `sestine_${ts}.txt`,
+                        txt,
+                        "text/plain;charset=utf-8",
+                      );
+                    }}
+                  >
+                    Scarica TXT
+                  </Button>
+                </div>
+
+                <div className="mt-3">
+                  <Button
+                    onClick={resetAll}
+                    disabled={state.groups.length === 0}
+                    variant="danger"
+                    className="w-full"
+                  >
+                    Reset totale
+                  </Button>
+                </div>
+
+                <div className="my-4 h-px bg-black/10" />
+
+                <SectionTitle
+                  title="Import"
+                  subtitle="Importa da file JSON le sestine"
+                />
+
+                <div className="mt-2">
+                  <Button
+                    onClick={() => setShowImport(true)}
+                    className="w-full"
+                  >
+                    Importa da file…
+                  </Button>
+                </div>
+              </>
+            )}
           </Card>
 
           {/* CONTENT */}
-          <Card className="p-4 animate-fadeUp">
+          <Card className="p-4 animate-fadeUp" data-onb={`panel-${tab}`}>
             {!selectedGroup ? (
               <p className="text-sm text-black/60">
                 Seleziona o crea un gruppo.
               </p>
             ) : tab === "generate" ? (
               <>
-                <SectionTitle
-                  title="Generazione"
-                  subtitle={
-                    <div className="text-xs text-black/60">
-                      <span className="font-bold">
-                        Vincoli: exclude={constraints.exclude.length},
-                        mustInclude={constraints.mustInclude.length}, anyOf=
-                        {constraints.mustIncludeAnyOf.length}
-                      </span>
+                <div data-onb="generate">
+                  <SectionTitle
+                    title="Generazione"
+                    subtitle={
+                      <div className="text-xs text-black/60">
+                        <span className="font-bold">
+                          Vincoli: exclude={constraints.exclude.length},
+                          mustInclude={constraints.mustInclude.length}, anyOf=
+                          {constraints.mustIncludeAnyOf.length}
+                        </span>
 
-                      <span className="mx-2 text-black/30">•</span>
+                        <span className="mx-2 text-black/30">•</span>
 
-                      <span className="font-bold">
-                        {state.settings.seedEnabled
-                          ? `seed="${state.settings.seedValue.trim()}"`
-                          : "seed OFF"}
-                      </span>
+                        <span className="font-bold">
+                          {state.settings.seedEnabled
+                            ? `seed="${state.settings.seedValue.trim()}"`
+                            : "seed OFF"}
+                        </span>
 
-                      {state.settings.superstitionEnabled && (
-                        <>
-                          <span className="mx-2 text-black/30">•</span>
-                          <span className="font-bold text-emerald-700">
-                            superstizione ON
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  }
-                />
+                        {state.settings.superstitionEnabled && (
+                          <>
+                            <span className="mx-2 text-black/30">•</span>
+                            <span className="font-bold text-emerald-700">
+                              superstizione ON
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    }
+                  />
+                </div>
 
                 <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2 items-center">
                   <input
@@ -1522,7 +1655,10 @@ export default function App() {
                             </div>
                           ) : (
                             <div className="text-sm font-bold text-black/80">
-                              Validazione: estratti {ev.draw.join(", ")}
+                              Validazione: estratti{" "}
+                              {Array.isArray((ev as any).draw)
+                                ? (ev as any).draw.join(", ")
+                                : "—"}
                               {ev.jolly ? ` · jolly ${ev.jolly}` : ""}
                               {ev.superstar
                                 ? ` · superstar ${ev.superstar}`
@@ -1723,6 +1859,11 @@ export default function App() {
                   </div>
                 </div>
               </>
+            ) : tab === "play" ? (
+              <PlayAssistPanel
+                groups={state.groups as any}
+                defaultGroupId={selectedGroupId}
+              />
             ) : (
               <>
                 <SectionTitle
@@ -2147,6 +2288,20 @@ export default function App() {
           </div>
         )}
 
+        {showImport && (
+          <FullscreenModal title="Import" onClose={() => setShowImport(false)}>
+            <ImportPanel
+              state={state}
+              setState={setState}
+              disabled={isGenerating}
+              onAfterImport={(newGroupId) => {
+                if (newGroupId) setSelectedGroupId(newGroupId);
+                setShowImport(false);
+              }}
+            />
+          </FullscreenModal>
+        )}
+
         {/* GENERATION MODAL */}
         {genModal && (
           <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-overlayIn">
@@ -2197,6 +2352,15 @@ export default function App() {
             </div>
           </div>
         )}
+
+        <Onboarding
+          open={showOnboarding}
+          onClose={() => setShowOnboarding(false)}
+          onRequestTab={(t) => setTab(t as Tab)}
+          storageKey={onboardingKey}
+          version={onboardingVersion}
+          groupsCount={state.groups.length}
+        />
 
         {/* FOOTER */}
         <footer className="mt-10 border-t border-black/10 bg-white/70 glass rounded-3xl">
